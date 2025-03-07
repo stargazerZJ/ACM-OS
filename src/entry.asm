@@ -3,6 +3,7 @@
 _start:
     la sp, boot_stack_top
     call rust_main
+    j .
 
     .section .bss.stack
     .globl boot_stack_lower_bound
