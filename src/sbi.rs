@@ -1,4 +1,5 @@
-#[allow(dead_code)]
+#![allow(dead_code)]
+#![allow(unused)]
 
 use core::sync::atomic::{AtomicU8, Ordering};
 use core::hint::spin_loop;
@@ -96,42 +97,46 @@ impl Uart {
     }
 
     /// Get a reference to the write port
-    fn write_port(&self) -> &'static mut WritePort {
-        unsafe { &mut *(UART_BASE as *mut WritePort) }
-    }
+    fn write_port(&self) -> &'static mut WritePort { unsafe { &mut *(UART_BASE as *mut WritePort) } }
 
     /// Initialize the UART with standard settings
     pub fn init(&self) {
         let read_port = self.read_port();
-        // let mut read_port = VolatileRef::from_mut_ref(&mut read_port);
-        // let read_port = read_port.as_mut_ptr();
+        let mut read_port = VolatileRef::from_mut_ref(read_port);
+        let read_port = read_port.as_mut_ptr();
         let write_port = self.write_port();
+        let mut write_port = VolatileRef::from_mut_ref(write_port);
+        let write_port = write_port.as_mut_ptr();
 
         // disable interrupts
-        read_port.ier = 0;
+        read_port.ier().write(0);
 
         // enable DLAB
-        // read_port.lcr().write(flags::LCR_DLAB_ENABLE);
-        read_port.lcr = flags::LCR_DLAB_ENABLE;
+        read_port.lcr().write(flags::LCR_DLAB_ENABLE);
 
         // set maximum speed of 38.4K for LSB
-        read_port.rbr.store(0x03, Ordering::Release);
+        unsafe {
+            (*(read_port.as_raw_ptr().as_ptr())).rbr.store(0x03, Ordering::Release);
+        }
 
         // set maximum speed of 38.4K for MSB
-        read_port.ier = 0;
+        read_port.ier().write(0);
 
         // disable DLAB and set data word length to 8 bits
-        read_port.lcr = flags::LCR_DATA_8;
+        read_port.lcr().write(flags::LCR_DATA_8);
 
         // enable FIFO, clear TX/RX queues and set interrupt watermark at 14 bytes
-        write_port.fcr = flags::FCR_ENABLE | flags::FCR_CLEAR_RX_FIFO |
-        flags::FCR_CLEAR_TX_FIFO | flags::FCR_TRIGGER_14;
+        // write_port.fcr = flags::FCR_ENABLE | flags::FCR_CLEAR_RX_FIFO |
+        // flags::FCR_CLEAR_TX_FIFO | flags::FCR_TRIGGER_14;
+        write_port.fcr().write(flags::FCR_ENABLE | flags::FCR_CLEAR_RX_FIFO |
+            flags::FCR_CLEAR_TX_FIFO | flags::FCR_TRIGGER_14);
 
         // mark data terminal ready, signal request to send and enable auxiliary output
-        read_port.mcr = flags::MCR_DATA_TERMINAL_READY | flags::MCR_AUXILIARY_OUTPUT_2;
+        read_port.mcr().write(flags::MCR_DATA_TERMINAL_READY | flags::MCR_AUXILIARY_OUTPUT_2);
 
         // enable receive interrupts (we'll poll in read() function)
-        read_port.ier = flags::IER_RX_AVAILABLE;
+        // read_port.ier = flags::IER_RX_AVAILABLE;
+        read_port.ier().write(flags::IER_RX_AVAILABLE);
     }
 
     /// Read a byte from the UART (blocking)
