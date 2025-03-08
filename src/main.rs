@@ -5,7 +5,7 @@
 mod lang_items;
 mod sbi;
 
-use core::arch::{asm, global_asm};
+use core::arch::global_asm;
 use crate::sbi::UART;
 
 global_asm!(include_str!("entry.asm"));
@@ -26,27 +26,20 @@ global_asm!(include_str!("entry.asm"));
 // }
 
 #[unsafe(no_mangle)]
-fn rust_main() -> () {
+fn rust_main() -> ! {
     UART.init();
     // Print "Hello, world!"
-    UART.write(0x48); // H
-    UART.write(0x65); // e
-    UART.write(0x6c); // l
-    UART.write(0x6c); // l
-    UART.write(0x6f); // o
-    UART.write(0x2c); // ,
-    UART.write(0x20); // space
-    UART.write(0x77); // w
-    UART.write(0x6f); // o
-    UART.write(0x72); // r
-    UART.write(0x6c); // l
-    UART.write(0x64); // d
-    UART.write(0x21); // !
-    UART.write(0x0a); // \n
+    println!("Hello, world!");
+    println!("中文");
 
     // Test read
+    println!("Please input a character:");
     let c: u8 = UART.read();
-    UART.write(c);
-    UART.write(0x0a); // \n
-    UART.shutdown(true);
+    println!("Read: {}", c as char);
+    #[allow(unreachable_code)]
+    if c == 0x61 {
+        !panic!("You input '{}' (panic test)", c as char);
+        // !panic!();
+    }
+    UART.shutdown(true)
 }

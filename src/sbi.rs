@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use core::hint::spin_loop;
 use volatile::access::{ReadOnly, ReadWrite};
 use volatile::{VolatileFieldAccess, VolatileRef};
+use core::fmt::{self, Write};
 
 // Hardcoded UART base address for QEMU virt
 const UART_BASE: usize = 0x10000000;
@@ -191,13 +192,43 @@ impl Uart {
     }
 
     // Shutdown the machine
-    pub fn shutdown(&self, success: bool) {
+    pub fn shutdown(&self, success: bool) -> ! {
         let shutdown = SHUTDOWN_BASE as *mut u16;
         unsafe {
             shutdown.write_volatile(if success { SHUTDOWN_PASS } else { SHUTDOWN_FAIL });
         }
+        loop {}
     }
 }
 
 // Create a global instance
 pub static UART: Uart = Uart;
+
+struct Stdout;
+
+impl Write for Stdout {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for c in s.bytes() {
+            UART.write(c);
+        }
+        Ok(())
+    }
+}
+
+pub fn print(args: fmt::Arguments) {
+    Stdout.write_fmt(args).unwrap();
+}
+
+#[macro_export]
+macro_rules! print {
+    ($fmt: literal $(, $($arg: tt)+)?) => {
+        $crate::sbi::print(format_args!($fmt $(, $($arg)+)?));
+    }
+}
+
+#[macro_export]
+macro_rules! println {
+    ($fmt: literal $(, $($arg: tt)+)?) => {
+        $crate::sbi::print(format_args!(concat!($fmt, "\n") $(, $($arg)+)?));
+    }
+}
