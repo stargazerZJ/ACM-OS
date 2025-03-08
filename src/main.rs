@@ -41,5 +41,13 @@ fn rust_main() -> ! {
         !panic!("You input '{}' (panic test)", c as char);
         // !panic!();
     }
+    // test_large_output();
     UART.shutdown(true)
+}
+
+fn test_large_output() {
+    println!("Test large output:");
+    for i in 0..1000 {
+        print!("Hello, world {}!", i);
+    }
 }
