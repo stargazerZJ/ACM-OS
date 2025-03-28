@@ -87,3 +87,9 @@ boot_stack_lower_bound:
     .space 4096 * 16
     .globl boot_stack_top
 boot_stack_top:
+    .section .bss.heap
+    .globl kernel_heap_beg
+kernel_heap_beg:
+    .space 4096 * 768   # 3 MB heap
+    .globl kernel_heap_end
+kernel_heap_end:

@@ -1,33 +1,42 @@
 #![no_std]
 #![no_main]
-// #![feature(naked_functions)]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 mod lang_items;
 mod sbi;
+mod mem;
+mod config;
 
 use core::arch::global_asm;
 use crate::sbi::UART;
 
 global_asm!(include_str!("entry.asm"));
-// use core::arch::naked_asm;
 
-
-// #[unsafe(no_mangle)]
-// #[unsafe(link_section = ".text.entry")]
-// #[naked]
-// extern "C" fn _start() {
-//     unsafe {
-//         naked_asm! {
-//             "la sp, boot_stack_top",
-//             "call rust_main",
-//             "j ."
-//         }
-//     }
-// }
 
 #[unsafe(no_mangle)]
 fn rust_main() -> ! {
+    clear_bss();
     UART.init();
+    mem::heap_allocator::init_heap();
+    // test_io();
+    mem::heap_allocator::heap_test();
+    UART.shutdown(true)
+}
+
+fn clear_bss() {
+    unsafe extern "C" {
+        fn sbss();
+        fn ebss();
+    }
+    unsafe {
+        (sbss as *mut u8).write_bytes(0, (ebss as usize - sbss as usize) / core::mem::size_of::<u8>());
+    }
+}
+
+#[allow(unused)]
+fn test_io() {
     // Print "Hello, world!"
     println!("Hello, world!");
     println!("中文");
@@ -42,9 +51,9 @@ fn rust_main() -> ! {
         // !panic!();
     }
     // test_large_output();
-    UART.shutdown(true)
 }
 
+#[allow(unused)]
 fn test_large_output() {
     println!("Test large output:");
     for i in 0..1000 {
