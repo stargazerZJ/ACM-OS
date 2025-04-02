@@ -16,9 +16,10 @@ global_asm!(include_str!("entry.asm"));
 
 
 #[unsafe(no_mangle)]
-fn rust_main() -> ! {
+pub extern "C" fn rust_main(hart_id: usize, dtb_pa: usize) -> ! {
     clear_bss();
     UART.init();
+    assert_eq!(hart_id, 0, "Only hart 0 is supported, but got {}", hart_id);
     mem::heap_allocator::init_heap();
     // test_io();
     mem::heap_allocator::heap_test();

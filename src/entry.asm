@@ -78,6 +78,9 @@ setup_machine_mode:
     li t0, 0xf                 # Load the configuration value (R=1,W=1,X=1, A=NAPOT)
     csrw pmpcfg0, t0           # Write to pmpcfg0 (configures PMP entry 0)
 
+    # 7. Put hartid in a0
+    csrr a0, mhartid
+
     # M-mode setup is complete.
     mret
 
