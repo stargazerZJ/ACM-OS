@@ -4,10 +4,14 @@
 
 extern crate alloc;
 
+#[macro_use]
+extern crate bitflags;
+
 mod lang_items;
 mod sbi;
 mod mem;
 mod config;
+mod sync;
 
 use core::arch::global_asm;
 use crate::sbi::UART;
