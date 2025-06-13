@@ -1,0 +1,302 @@
+diff --git a/tcpdump-4.99.5/Makefile.in b/tcpdump-4.99.5/Makefile.in
+index e991cce..c4e89ba 100644
+--- a/tcpdump-4.99.5/Makefile.in
++++ b/tcpdump-4.99.5/Makefile.in
+@@ -71,7 +71,7 @@ DEPENDENCY_CFLAG = @DEPENDENCY_CFLAG@
+ 	@rm -f $@
+ 	$(CC) $(FULL_CFLAGS) -c $(srcdir)/$*.c
+
+-CSRC =	fptype.c tcpdump.c
++CSRC =	fptype.c tcpdump.c skip_filter.c
+
+ LIBNETDISSECT_SRC=\
+ 	addrtoname.c \
+@@ -314,6 +314,7 @@ HDR = \
+ 	rpc_msg.h \
+ 	signature.h \
+ 	slcompress.h \
++	skip_filter.h \
+ 	smb.h \
+ 	status-exit-codes.h \
+ 	strtoaddr.h \
+@@ -330,7 +331,7 @@ TAGFILES = $(SRC) $(HDR) $(TAGHDR) $(LIBNETDISSECT_SRC) \
+ 	print-smb.c smbutil.c
+
+ CLEANFILES = $(PROG) $(OBJ) $(LIBNETDISSECT_OBJ) \
+-	print-smb.o smbutil.o instrument-functions.o
++	print-smb.o smbutil.o instrument-functions.o skip_filter.o
+
+ EXTRA_DIST = \
+ 	CHANGES \
+diff --git a/tcpdump-4.99.5/configure.ac b/tcpdump-4.99.5/configure.ac
+index 1f2e4d7..702f147 100644
+--- a/tcpdump-4.99.5/configure.ac
++++ b/tcpdump-4.99.5/configure.ac
+@@ -171,6 +171,8 @@ yes)	AC_MSG_RESULT(yes)
+ 	AC_DEFINE(ENABLE_INSTRUMENT_FUNCTIONS, 1,
+ 	    [define if you want to build the instrument functions code])
+ 	LOCALSRC="$LOCALSRC instrument-functions.c"
++	# Add skip_filter.c to LOCALSRC for inclusion in the build
++	LOCALSRC="$LOCALSRC skip_filter.c"
+ 	# Add '-finstrument-functions' instrumentation option to generate
+ 	# instrumentation calls for entry and exit to functions.
+ 	# Try to avoid Address Space Layout Randomization (ALSR).
+diff --git a/tcpdump-4.99.5/netdissect.h b/tcpdump-4.99.5/netdissect.h
+index 36efe18..2d0480b 100644
+--- a/tcpdump-4.99.5/netdissect.h
++++ b/tcpdump-4.99.5/netdissect.h
+@@ -222,6 +222,7 @@ struct netdissect_options {
+ 				 * LF, CR and SPACE as graphical chars
+ 				 */
+   int ndo_Hflag;		/* dissect 802.11s draft mesh standard */
++  int ndo_kflag;        /* number of packets to skip */
+   const char *ndo_protocol;	/* protocol */
+   jmp_buf ndo_early_end;	/* jmp_buf for setjmp()/longjmp() */
+   void *ndo_last_mem_p;		/* pointer to the last allocated memory chunk */
+diff --git a/tcpdump-4.99.5/skip_filter.c b/tcpdump-4.99.5/skip_filter.c
+new file mode 100644
+index 0000000..dcb7652
+--- /dev/null
++++ b/tcpdump-4.99.5/skip_filter.c
+@@ -0,0 +1,73 @@
++/*
++ * Skip Filter - A custom packet filtering mechanism for tcpdump
++ *
++ * This implementation adds a feature to skip the first N packets that pass
++ * the built-in BPF filter.
++ */
++
++#include <stdio.h>
++#include <pcap.h>
++
++/* Global variables for skip filter functionality */
++static unsigned int skip_count = 0;  /* Number of packets to skip */
++static unsigned int packets_seen = 0;  /* Number of packets seen so far */
++
++/* Original callback handlers */
++static pcap_handler original_handler = NULL;
++
++/* Set the number of packets to skip */
++void
++skip_filter_set_count(unsigned int count)
++{
++    skip_count = count;
++    packets_seen = 0;
++
++    if (count > 0) {
++        fprintf(stderr, "Skip filter: Will skip the first %u packets\n", skip_count);
++    }
++}
++
++/* Reset the skip filter */
++void
++skip_filter_reset(void)
++{
++    packets_seen = 0;
++}
++
++/*
++ * Wrapper callback that skips the first N packets
++ */
++void
++skip_filter_packet_handler(unsigned char *user, const struct pcap_pkthdr *h, const unsigned char *sp)
++{
++    packets_seen++;
++
++    /* Skip the first 'skip_count' packets */
++    if (packets_seen <= skip_count) {
++        /* Only print status infrequently for large skip counts to avoid flooding stderr */
++        if ((skip_count > 100 && packets_seen % 100 == 0) ||
++            (skip_count > 10 && packets_seen % 10 == 0) ||
++            (skip_count <= 10) ||
++            (packets_seen == skip_count)) {
++            fprintf(stderr, "Skip filter: Skipping packet %u of %u\n", packets_seen, skip_count);
++        }
++        return;  /* Skip this packet by returning without calling original handler */
++    }
++
++    if (packets_seen == skip_count + 1) {
++        fprintf(stderr, "Skip filter: Now processing packets after skipping %u packets\n", skip_count);
++    }
++
++    /* After skipping enough packets, pass to the original callback */
++    if (original_handler) {
++        original_handler(user, h, sp);
++    }
++}
++
++/* Register the original handler and return the wrapper */
++pcap_handler
++skip_filter_get_handler(pcap_handler original)
++{
++    original_handler = original;
++    return skip_filter_packet_handler;
++}
+\ No newline at end of file
+diff --git a/tcpdump-4.99.5/skip_filter.h b/tcpdump-4.99.5/skip_filter.h
+new file mode 100644
+index 0000000..be1d21e
+--- /dev/null
++++ b/tcpdump-4.99.5/skip_filter.h
+@@ -0,0 +1,22 @@
++/*
++ * Skip Filter - Header for custom packet filtering mechanism for tcpdump
++ *
++ * This implementation adds a feature to skip the first N packets that pass
++ * the built-in BPF filter.
++ */
++
++#ifndef SKIP_FILTER_H
++#define SKIP_FILTER_H
++
++#include <pcap.h>
++
++/* Set the number of packets to skip */
++void skip_filter_set_count(unsigned int count);
++
++/* Reset the skip filter */
++void skip_filter_reset(void);
++
++/* Register the original handler and return the wrapper */
++pcap_handler skip_filter_get_handler(pcap_handler original);
++
++#endif /* SKIP_FILTER_H */
+\ No newline at end of file
+diff --git a/tcpdump-4.99.5/tcpdump.c b/tcpdump-4.99.5/tcpdump.c
+index a4cdbe0..e507b01 100644
+--- a/tcpdump-4.99.5/tcpdump.c
++++ b/tcpdump-4.99.5/tcpdump.c
+@@ -163,6 +163,9 @@ The Regents of the University of California.  All rights reserved.\n";
+
+ #include "fptype.h"
+
++/* Include our skip filter header */
++#include "skip_filter.h"
++
+ #ifndef PATH_MAX
+ #define PATH_MAX 1024
+ #endif
+@@ -670,7 +673,7 @@ show_remote_devices_and_exit(void)
+ #define U_FLAG
+ #endif
+
+-#define SHORTOPTS "aAb" B_FLAG "c:C:d" D_FLAG "eE:fF:G:hHi:" I_FLAG j_FLAG J_FLAG "KlLm:M:nNOpq" Q_FLAG "r:s:StT:u" U_FLAG "vV:w:W:xXy:Yz:Z:#"
++#define SHORTOPTS "aAb" B_FLAG "c:C:d" D_FLAG "eE:fF:G:hHi:" I_FLAG j_FLAG J_FLAG "k:KlLm:M:nNOpq" Q_FLAG "r:s:StT:u" U_FLAG "vV:w:W:xXy:Yz:Z:#"
+
+ /*
+  * Long options.
+@@ -749,6 +752,7 @@ static const struct option longopts[] = {
+ 	{ "number", no_argument, NULL, '#' },
+ 	{ "print", no_argument, NULL, OPTION_PRINT },
+ 	{ "version", no_argument, NULL, OPTION_VERSION },
++	{ "skip-packets", required_argument, NULL, 'k' },
+ 	{ NULL, 0, NULL, 0 }
+ };
+
+@@ -1962,6 +1966,12 @@ main(int argc, char **argv)
+ 			count_mode = 1;
+ 			break;
+
++		case 'k':
++			ndo->ndo_kflag = atoi(optarg);
++			if (ndo->ndo_kflag < 0)
++				error("invalid number of packets to skip %s", optarg);
++			break;
++
+ 		default:
+ 			print_usage(stderr);
+ 			exit_tcpdump(S_ERR_HOST_PROGRAM);
+@@ -2481,12 +2491,22 @@ DIAG_ON_ASSIGN_ENUM
+ 			if (cap_fcntls_limit(dumpinfo.dirfd, CAP_FCNTL_GETFL) < 0 &&
+ 			    errno != ENOSYS) {
+ 				error("unable to limit dump descriptor fcntls");
++			if (ndo->ndo_kflag) {
++				skip_filter_set_count(ndo->ndo_kflag);
++				callback = skip_filter_get_handler(dump_packet_and_trunc);
++			} else {
++				callback = dump_packet_and_trunc;
+ 			}
+ #else	/* !HAVE_CAPSICUM */
+ 			dumpinfo.WFileName = WFileName;
+ #endif
+ 			callback = dump_packet_and_trunc;
+-			dumpinfo.pd = pd;
++				if (ndo->ndo_kflag) {
++					skip_filter_set_count(ndo->ndo_kflag);
++					callback = skip_filter_get_handler(dump_packet);
++				} else {
++					callback = dump_packet;
++				}
+ 			dumpinfo.pdd = pdd;
+ 			pcap_userdata = (u_char *)&dumpinfo;
+ 		} else {
+@@ -2501,7 +2521,12 @@ DIAG_ON_ASSIGN_ENUM
+ 			ndo->ndo_if_printer = get_if_printer(dlt);
+ 			dumpinfo.ndo = ndo;
+ 		} else
+-			dumpinfo.ndo = NULL;
++			if (ndo->ndo_kflag) {
++				skip_filter_set_count(ndo->ndo_kflag);
++				callback = skip_filter_get_handler(print_packet);
++			} else {
++				callback = print_packet;
++			}
+
+ #ifdef HAVE_PCAP_DUMP_FLUSH
+ 		if (Uflag)
+@@ -2510,7 +2535,12 @@ DIAG_ON_ASSIGN_ENUM
+ 	} else {
+ 		dlt = pcap_datalink(pd);
+ 		ndo->ndo_if_printer = get_if_printer(dlt);
+-		callback = print_packet;
++		if (ndo->ndo_kflag) {
++			skip_filter_set_count(ndo->ndo_kflag);
++			callback = skip_filter_get_handler(print_packet);
++		} else {
++			callback = print_packet;
++		}
+ 		pcap_userdata = (u_char *)ndo;
+ 	}
+
+@@ -3270,31 +3300,14 @@ DIAG_ON_DEPRECATION
+ static void
+ print_usage(FILE *f)
+ {
+-	print_version(f);
+-	(void)fprintf(f,
+-"Usage: %s [-Abd" D_FLAG "efhH" I_FLAG J_FLAG "KlLnNOpqStu" U_FLAG "vxX#]" B_FLAG_USAGE " [ -c count ] [--count]\n", program_name);
+-	(void)fprintf(f,
+-"\t\t[ -C file_size ] [ -E algo:secret ] [ -F file ] [ -G seconds ]\n");
+-	(void)fprintf(f,
+-"\t\t[ -i interface ]" IMMEDIATE_MODE_USAGE j_FLAG_USAGE "\n");
+-#ifdef HAVE_PCAP_FINDALLDEVS_EX
+-	(void)fprintf(f,
+-"\t\t" LIST_REMOTE_INTERFACES_USAGE "\n");
+-#endif
+-#ifdef USE_LIBSMI
+-	(void)fprintf(f,
+-"\t\t" m_FLAG_USAGE "\n");
+-#endif
+-	(void)fprintf(f,
+-"\t\t[ -M secret ] [ --number ] [ --print ]" Q_FLAG_USAGE "\n");
+-	(void)fprintf(f,
+-"\t\t[ -r file ] [ -s snaplen ] [ -T type ] [ --version ]\n");
+-	(void)fprintf(f,
+-"\t\t[ -V file ] [ -w file ] [ -W filecount ] [ -y datalinktype ]\n");
+-#ifdef HAVE_PCAP_SET_TSTAMP_PRECISION
+-	(void)fprintf(f,
+-"\t\t[ --time-stamp-precision precision ] [ --micro ] [ --nano ]\n");
+-#endif
+-	(void)fprintf(f,
+-"\t\t[ -z postrotate-command ] [ -Z user ] [ expression ]\n");
++	extern char version[];
++	fprintf(f,
++"Usage: %s [-AbdDefhHIJKlLnNOpqStuUvxX#] [ -B size ] [ -c count ] [ -C file_size ]\n"
++"    [ -E algo:secret ] [ -F file ] [ -G seconds ] [ -i interface ] [ -j tstamptype ]\n"
++"    [ -k skipcount ] [ -M secret ] [ -O buffer_size ] [ -Q in|out|inout ]\n"
++"    [ -r file ] [ -s snaplen ] [ -T type ] [ -V file ] [ -w file ]\n"
++"    [ -W filecount ] [ -y datalinktype ] [ -z postrotate-command ] [ -Z user ]\n"
++"    [ --time-stamp-precision precision ] [ --immediate-mode ] [ --version ]\n"
++"    [ expression ]\n",
++		program_name);
+ }

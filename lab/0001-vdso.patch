@@ -1,0 +1,272 @@
+diff --git a/arch/x86/entry/vdso/Makefile b/arch/x86/entry/vdso/Makefile
+index 12f6c4d71..7ddfcb57c 100644
+--- a/arch/x86/entry/vdso/Makefile
++++ b/arch/x86/entry/vdso/Makefile
+@@ -24,7 +24,7 @@ VDSO32-$(CONFIG_X86_32)		:= y
+ VDSO32-$(CONFIG_IA32_EMULATION)	:= y
+ 
+ # files to link into the vdso
+-vobjs-y := vdso-note.o vclock_gettime.o vgetcpu.o
++vobjs-y := vdso-note.o vclock_gettime.o vgetcpu.o vgetpid.o
+ vobjs32-y := vdso32/note.o vdso32/system_call.o vdso32/sigreturn.o
+ vobjs32-y += vdso32/vclock_gettime.o
+ vobjs-$(CONFIG_X86_SGX)	+= vsgx.o
+@@ -100,6 +100,7 @@ $(vobjs): KBUILD_AFLAGS += -DBUILD_VDSO
+ CFLAGS_REMOVE_vclock_gettime.o = -pg
+ CFLAGS_REMOVE_vdso32/vclock_gettime.o = -pg
+ CFLAGS_REMOVE_vgetcpu.o = -pg
++CFLAGS_REMOVE_vgetpid.o = -pg
+ CFLAGS_REMOVE_vsgx.o = -pg
+ 
+ #
+diff --git a/arch/x86/entry/vdso/vdso-layout.lds.S b/arch/x86/entry/vdso/vdso-layout.lds.S
+index bafa73f09..3142eded0 100644
+--- a/arch/x86/entry/vdso/vdso-layout.lds.S
++++ b/arch/x86/entry/vdso/vdso-layout.lds.S
+@@ -16,7 +16,7 @@ SECTIONS
+ 	 * segment.
+ 	 */
+ 
+-	vvar_start = . - 4 * PAGE_SIZE;
++	vvar_start = . - 5 * PAGE_SIZE;
+ 	vvar_page  = vvar_start;
+ 
+ 	/* Place all vvars at the offsets in asm/vvar.h. */
+@@ -27,6 +27,7 @@ SECTIONS
+ 	pvclock_page = vvar_start + PAGE_SIZE;
+ 	hvclock_page = vvar_start + 2 * PAGE_SIZE;
+ 	timens_page  = vvar_start + 3 * PAGE_SIZE;
++	ppdata_page  = vvar_start + 4 * PAGE_SIZE;
+ 
+ #undef _ASM_X86_VVAR_H
+ 	/* Place all vvars in timens too at the offsets in asm/vvar.h. */
+diff --git a/arch/x86/entry/vdso/vdso.lds.S b/arch/x86/entry/vdso/vdso.lds.S
+index 4bf48462f..0bb400272 100644
+--- a/arch/x86/entry/vdso/vdso.lds.S
++++ b/arch/x86/entry/vdso/vdso.lds.S
+@@ -28,6 +28,8 @@ VERSION {
+ 		clock_getres;
+ 		__vdso_clock_getres;
+ 		__vdso_sgx_enter_enclave;
++		getpid;
++		__vdso_getpid;
+ 	local: *;
+ 	};
+ }
+diff --git a/arch/x86/entry/vdso/vdso2c.c b/arch/x86/entry/vdso/vdso2c.c
+index edfe9780f..ee7cd1366 100644
+--- a/arch/x86/entry/vdso/vdso2c.c
++++ b/arch/x86/entry/vdso/vdso2c.c
+@@ -76,6 +76,7 @@ enum {
+ 	sym_pvclock_page,
+ 	sym_hvclock_page,
+ 	sym_timens_page,
++	sym_ppdata_page,
+ };
+ 
+ const int special_pages[] = {
+@@ -83,6 +84,7 @@ const int special_pages[] = {
+ 	sym_pvclock_page,
+ 	sym_hvclock_page,
+ 	sym_timens_page,
++	sym_ppdata_page,
+ };
+ 
+ struct vdso_sym {
+@@ -96,6 +98,7 @@ struct vdso_sym required_syms[] = {
+ 	[sym_pvclock_page] = {"pvclock_page", true},
+ 	[sym_hvclock_page] = {"hvclock_page", true},
+ 	[sym_timens_page] = {"timens_page", true},
++	[sym_ppdata_page] = {"ppdata_page", true},
+ 	{"VDSO32_NOTE_MASK", true},
+ 	{"__kernel_vsyscall", true},
+ 	{"__kernel_sigreturn", true},
+diff --git a/arch/x86/entry/vdso/vgetpid.c b/arch/x86/entry/vdso/vgetpid.c
+new file mode 100644
+index 000000000..ee3e68f32
+--- /dev/null
++++ b/arch/x86/entry/vdso/vgetpid.c
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Fast user context implementation of getpid()
++ */
++
++#include <linux/kernel.h>
++#include <linux/time.h>
++#include <asm/vgtod.h>
++#include <linux/sched.h>
++
++/* Per-process data structure - must match kernel definition */
++struct vdso_ppdata {
++	pid_t pid;
++	/* Add more per-process data here as needed */
++};
++
++notrace pid_t
++__vdso_getpid(void)
++{
++	/* Calculate ppdata_page: vvar_page + 4 * PAGE_SIZE */
++	/* __vdso_data is at vvar_page + 128, so vvar_page = __vdso_data - 128 */
++	/* With the new layout: vvar_start = -5 * PAGE_SIZE, ppdata_page = vvar_start + 4 * PAGE_SIZE = -PAGE_SIZE */
++	const struct vdso_ppdata *ppdata = (struct vdso_ppdata *)
++		((unsigned long)__arch_get_vdso_data() - 128 - PAGE_SIZE);
++
++	/* Return the PID from the per-process data page */
++	return ppdata->pid;
++}
++
++pid_t getpid(void) __attribute__((weak, alias("__vdso_getpid")));
+\ No newline at end of file
+diff --git a/arch/x86/entry/vdso/vma.c b/arch/x86/entry/vdso/vma.c
+index 1000d457c..a1078c99e 100644
+--- a/arch/x86/entry/vdso/vma.c
++++ b/arch/x86/entry/vdso/vma.c
+@@ -215,7 +215,7 @@ static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
+ 		if (tsc_pg && vclock_was_used(VDSO_CLOCKMODE_HVCLOCK))
+ 			return vmf_insert_pfn(vma, vmf->address,
+ 					virt_to_phys(tsc_pg) >> PAGE_SHIFT);
+-	} else if (sym_offset == image->sym_timens_page) {
++		} else if (sym_offset == image->sym_timens_page) {
+ 		struct page *timens_page = find_timens_vvar_page(vma);
+ 
+ 		if (!timens_page)
+@@ -237,6 +237,32 @@ static const struct vm_special_mapping vvar_mapping = {
+ 	.name = "[vvar]",
+ 	.fault = vvar_fault,
+ };
++static vm_fault_t ppdata_fault(const struct vm_special_mapping *sm,
++		      struct vm_area_struct *vma, struct vm_fault *vmf)
++{
++	/* Per-process data page - allocate if needed */
++	struct page *ppdata_page = vma->vm_mm->context.ppdata_page;
++	struct vdso_ppdata *ppdata;
++
++	if (!ppdata_page) {
++		/* No page allocated yet - allocate one */
++		ppdata_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
++		if (!ppdata_page)
++			return VM_FAULT_OOM;
++
++		ppdata = (struct vdso_ppdata *)page_address(ppdata_page);
++		ppdata->pid = current->pid;
++
++		vma->vm_mm->context.ppdata_page = ppdata_page;
++	}
++
++	return vmf_insert_pfn(vma, vmf->address, page_to_pfn(ppdata_page));
++}
++
++static const struct vm_special_mapping vdso_ppdata_mapping = {
++	.name = "[vvar-ppdata]",
++	.fault = ppdata_fault,
++};
+ 
+ /*
+  * Add vdso and vvar mappings to current process.
+@@ -279,7 +305,7 @@ static int map_vdso(const struct vdso_image *image, unsigned long addr)
+ 
+ 	vma = _install_special_mapping(mm,
+ 				       addr,
+-				       -image->sym_vvar_start,
++				       -image->sym_vvar_start - PAGE_SIZE,
+ 				       VM_READ|VM_MAYREAD|VM_IO|VM_DONTDUMP|
+ 				       VM_PFNMAP,
+ 				       &vvar_mapping);
+@@ -287,6 +313,21 @@ static int map_vdso(const struct vdso_image *image, unsigned long addr)
+ 	if (IS_ERR(vma)) {
+ 		ret = PTR_ERR(vma);
+ 		do_munmap(mm, text_start, image->size, NULL);
++		goto up_fail;
++	}
++
++	/* Map the per-process data page with VM_WIPEONFORK */
++	vma = _install_special_mapping(mm,
++				       addr + image->sym_ppdata_page,
++				       PAGE_SIZE,
++				       VM_READ|VM_MAYREAD|VM_IO|VM_DONTDUMP|
++				       VM_PFNMAP|VM_WIPEONFORK,
++				       &vdso_ppdata_mapping);
++
++	if (IS_ERR(vma)) {
++		ret = PTR_ERR(vma);
++		do_munmap(mm, text_start, image->size, NULL);
++		do_munmap(mm, addr, -image->sym_vvar_start, NULL);
+ 	} else {
+ 		current->mm->context.vdso = (void __user *)text_start;
+ 		current->mm->context.vdso_image = image;
+@@ -365,7 +406,8 @@ int map_vdso_once(const struct vdso_image *image, unsigned long addr)
+ 	 */
+ 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
+ 		if (vma_is_special_mapping(vma, &vdso_mapping) ||
+-				vma_is_special_mapping(vma, &vvar_mapping)) {
++				vma_is_special_mapping(vma, &vvar_mapping) ||
++				vma_is_special_mapping(vma, &vdso_ppdata_mapping)) {
+ 			mmap_write_unlock(mm);
+ 			return -EEXIST;
+ 		}
+diff --git a/arch/x86/include/asm/mmu.h b/arch/x86/include/asm/mmu.h
+index 5d7494631..aa789d15c 100644
+--- a/arch/x86/include/asm/mmu.h
++++ b/arch/x86/include/asm/mmu.h
+@@ -45,6 +45,7 @@ typedef struct {
+ 	struct mutex lock;
+ 	void __user *vdso;			/* vdso base address */
+ 	const struct vdso_image *vdso_image;	/* vdso image in use */
++	struct page *ppdata_page;		/* per-process data page */
+ 
+ 	atomic_t perf_rdpmc_allowed;	/* nonzero if rdpmc is allowed */
+ #ifdef CONFIG_X86_INTEL_MEMORY_PROTECTION_KEYS
+diff --git a/arch/x86/include/asm/mmu_context.h b/arch/x86/include/asm/mmu_context.h
+index b8d40ddea..e56f1388e 100644
+--- a/arch/x86/include/asm/mmu_context.h
++++ b/arch/x86/include/asm/mmu_context.h
+@@ -123,6 +123,12 @@ static inline int init_new_context(struct task_struct *tsk,
+ static inline void destroy_context(struct mm_struct *mm)
+ {
+ 	destroy_context_ldt(mm);
++
++	/* Free per-process data page if allocated */
++	if (mm->context.ppdata_page) {
++		__free_page(mm->context.ppdata_page);
++		mm->context.ppdata_page = NULL;
++	}
+ }
+ 
+ extern void switch_mm(struct mm_struct *prev, struct mm_struct *next,
+@@ -168,6 +174,10 @@ static inline int arch_dup_mmap(struct mm_struct *oldmm, struct mm_struct *mm)
+ {
+ 	arch_dup_pkeys(oldmm, mm);
+ 	paravirt_arch_dup_mmap(oldmm, mm);
++
++	/* Clear ppdata_page for child process - it will be allocated on first access */
++	mm->context.ppdata_page = NULL;
++
+ 	return ldt_dup_context(oldmm, mm);
+ }
+ 
+diff --git a/arch/x86/include/asm/vdso.h b/arch/x86/include/asm/vdso.h
+index 2963a2f5d..f4c7210f7 100644
+--- a/arch/x86/include/asm/vdso.h
++++ b/arch/x86/include/asm/vdso.h
+@@ -10,6 +10,12 @@
+ 
+ #include <linux/mm_types.h>
+ 
++/* Per-process data structure for vDSO */
++struct vdso_ppdata {
++	pid_t pid;
++	/* Add more per-process data here as needed */
++};
++
+ struct vdso_image {
+ 	void *data;
+ 	unsigned long size;   /* Always a multiple of PAGE_SIZE */
+@@ -24,6 +30,7 @@ struct vdso_image {
+ 	long sym_pvclock_page;
+ 	long sym_hvclock_page;
+ 	long sym_timens_page;
++	long sym_ppdata_page;
+ 	long sym_VDSO32_NOTE_MASK;
+ 	long sym___kernel_sigreturn;
+ 	long sym___kernel_rt_sigreturn;

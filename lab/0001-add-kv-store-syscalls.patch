@@ -1,0 +1,325 @@
+From ede4abc97a88f7419a845d6ad7942f354914d39e Mon Sep 17 00:00:00 2001
+From: stargazerZJ <53366576+stargazerZJ@users.noreply.github.com>
+Date: Wed, 23 Apr 2025 16:52:33 +0800
+Subject: [PATCH] add kv-store syscalls
+
+---
+ arch/x86/configs/x86_64_defconfig      |  2 +
+ arch/x86/entry/syscalls/syscall_64.tbl |  2 +
+ include/linux/kv_pair.h                | 16 ++++++
+ include/linux/sched.h                  |  4 ++
+ include/linux/syscalls.h               |  4 ++
+ include/uapi/asm-generic/unistd.h      |  7 ++-
+ init/Kconfig                           | 10 ++++
+ kernel/Makefile                        |  2 +
+ kernel/exit.c                          | 22 ++++++++
+ kernel/fork.c                          | 13 +++++
+ kernel/kv_store.c                      | 76 ++++++++++++++++++++++++++
+ kernel/sys_ni.c                        |  3 +
+ 12 files changed, 160 insertions(+), 1 deletion(-)
+ create mode 100644 include/linux/kv_pair.h
+ create mode 100644 kernel/kv_store.c
+
+diff --git a/arch/x86/configs/x86_64_defconfig b/arch/x86/configs/x86_64_defconfig
+index 69784505a..3da549877 100644
+--- a/arch/x86/configs/x86_64_defconfig
++++ b/arch/x86/configs/x86_64_defconfig
+@@ -277,3 +277,5 @@ CONFIG_BLK_DEV_IO_TRACE=y
+ CONFIG_PROVIDE_OHCI1394_DMA_INIT=y
+ CONFIG_EARLY_PRINTK_DBGP=y
+ CONFIG_DEBUG_BOOT_PARAMS=y
++
++CONFIG_KV_STORE_SYSCALL=y
+\ No newline at end of file
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index c84d12608..930f5074f 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -372,6 +372,8 @@
+ 448	common	process_mrelease	sys_process_mrelease
+ 449	common	futex_waitv		sys_futex_waitv
+ 450	common	set_mempolicy_home_node	sys_set_mempolicy_home_node
++451 common  write_kv    sys_write_kv
++452 common  read_kv     sys_read_kv
+ 
+ #
+ # Due to a historical design error, certain syscalls are numbered differently
+diff --git a/include/linux/kv_pair.h b/include/linux/kv_pair.h
+new file mode 100644
+index 000000000..05a3ff81c
+--- /dev/null
++++ b/include/linux/kv_pair.h
+@@ -0,0 +1,16 @@
++
++#ifndef _LINUX_KV_PAIR_H
++#define _LINUX_KV_PAIR_H
++
++
++#include <linux/list.h>
++
++
++/* Key-Value pair structure */
++struct kv_pair {
++    int key;
++    int value;
++    struct hlist_node node;
++};
++
++#endif
+\ No newline at end of file
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index e02dc270f..97764f3db 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1500,6 +1500,10 @@ struct task_struct {
+ 	struct callback_head		l1d_flush_kill;
+ #endif
+ 
++    /* Key-Value store */
++    struct hlist_head kv_store[1024];
++    spinlock_t kv_locks[1024];
++
+ 	/*
+ 	 * New fields for task_struct should be added above here, so that
+ 	 * they are included in the randomized portion of task_struct.
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index a34b0f9a9..8dddde75b 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -1169,6 +1169,10 @@ asmlinkage long sys_sysfs(int option,
+ 				unsigned long arg1, unsigned long arg2);
+ asmlinkage long sys_fork(void);
+ 
++/* read and write the kernel key-value store */
++asmlinkage long sys_write_kv(int key, int value);
++asmlinkage long sys_read_kv(int key);
++
+ /* obsolete: kernel/time/time.c */
+ asmlinkage long sys_stime(__kernel_old_time_t __user *tptr);
+ asmlinkage long sys_stime32(old_time32_t __user *tptr);
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 45fa180cc..6d76ef824 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -886,8 +886,13 @@ __SYSCALL(__NR_futex_waitv, sys_futex_waitv)
+ #define __NR_set_mempolicy_home_node 450
+ __SYSCALL(__NR_set_mempolicy_home_node, sys_set_mempolicy_home_node)
+ 
++#define __NR_write_kv 451
++__SYSCALL(__NR_write_kv, sys_write_kv)
++#define __NR_read_kv 452
++__SYSCALL(__NR_read_kv, sys_read_kv)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 451
++#define __NR_syscalls 453
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/init/Kconfig b/init/Kconfig
+index c7900e897..07087105b 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -2258,3 +2258,13 @@ config ARCH_HAS_SYNC_CORE_BEFORE_USERMODE
+ # <asm/syscall_wrapper.h>.
+ config ARCH_HAS_SYSCALL_WRAPPER
+ 	def_bool n
++
++config KV_STORE_SYSCALL
++    bool "Key-Value Store System Calls"
++    # depends on EXPERT
++    help
++      This option enables key-value store system calls that allow
++      processes to store and retrieve key-value pairs.
++
++      This is primarily for educational OS lab purposes.
++      If unsure, say N.
+\ No newline at end of file
+diff --git a/kernel/Makefile b/kernel/Makefile
+index a7e1f49ab..9a7f7f059 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -131,6 +131,8 @@ obj-$(CONFIG_WATCH_QUEUE) += watch_queue.o
+ obj-$(CONFIG_RESOURCE_KUNIT_TEST) += resource_kunit.o
+ obj-$(CONFIG_SYSCTL_KUNIT_TEST) += sysctl-test.o
+ 
++obj-$(CONFIG_KV_STORE_SYSCALL) += kv_store.o
++
+ CFLAGS_stackleak.o += $(DISABLE_STACKLEAK_PLUGIN)
+ obj-$(CONFIG_GCC_PLUGIN_STACKLEAK) += stackleak.o
+ KASAN_SANITIZE_stackleak.o := n
+diff --git a/kernel/exit.c b/kernel/exit.c
+index 64c938ce3..ab282fc65 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -66,6 +66,7 @@
+ #include <linux/io_uring.h>
+ #include <linux/kprobes.h>
+ #include <linux/rethook.h>
++#include <linux/kv_pair.h>
+ 
+ #include <linux/uaccess.h>
+ #include <asm/unistd.h>
+@@ -733,6 +734,25 @@ static void check_stack_usage(void)
+ static inline void check_stack_usage(void) {}
+ #endif
+ 
++void exit_kv_store(struct task_struct *tsk)
++{
++    /* Clean up key-value store only if this is the thread group leader */
++    if (tsk->pid == tsk->tgid) {
++        int i;
++        struct kv_pair *pair;
++        struct hlist_node *tmp;
++
++        for (i = 0; i < 1024; i++) {
++            spin_lock(&tsk->kv_locks[i]);
++            hlist_for_each_entry_safe(pair, tmp, &tsk->kv_store[i], node) {
++                hlist_del(&pair->node);
++                kfree(pair);
++            }
++            spin_unlock(&tsk->kv_locks[i]);
++        }
++    }
++}
++
+ void __noreturn do_exit(long code)
+ {
+ 	struct task_struct *tsk = current;
+@@ -843,6 +863,8 @@ void __noreturn do_exit(long code)
+ 	exit_rcu();
+ 	exit_tasks_rcu_finish();
+ 
++    exit_kv_store(tsk);
++
+ 	lockdep_free_task(tsk);
+ 	do_task_dead();
+ }
+diff --git a/kernel/fork.c b/kernel/fork.c
+index d587c85f3..2c0d60d7b 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -98,6 +98,7 @@
+ #include <linux/io_uring.h>
+ #include <linux/bpf.h>
+ #include <linux/sched/mm.h>
++#include <linux/kv_pair.h>
+ 
+ #include <asm/pgalloc.h>
+ #include <linux/uaccess.h>
+@@ -2128,6 +2129,18 @@ static __latent_entropy struct task_struct *copy_process(
+ 	p->vfork_done = NULL;
+ 	spin_lock_init(&p->alloc_lock);
+ 
++    /* Initialize key-value store for the new task */
++    if (clone_flags & CLONE_THREAD) {
++        /* Thread creation - don't initialize, will use group leader's store */
++    } else {
++        /* Process creation - initialize empty store */
++        for (int i = 0; i < 1024; i++) {
++            INIT_HLIST_HEAD(&p->kv_store[i]);
++            spin_lock_init(&p->kv_locks[i]);
++        }
++    }
++
++
+ 	init_sigpending(&p->pending);
+ 
+ 	p->utime = p->stime = p->gtime = 0;
+diff --git a/kernel/kv_store.c b/kernel/kv_store.c
+new file mode 100644
+index 000000000..a2b7b886f
+--- /dev/null
++++ b/kernel/kv_store.c
+@@ -0,0 +1,76 @@
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/sched.h>
++#include <linux/slab.h>
++#include <linux/list.h>
++#include <linux/spinlock.h>
++#include <linux/errno.h>
++#include <linux/kv_pair.h>
++
++/* Get the task to use for key-value operations */
++static inline struct task_struct *get_kv_task(void)
++{
++    return current->group_leader; // Always use the thread group leader's storage
++}
++
++/* Find a key-value pair in the store */
++static struct kv_pair *find_kv_pair(struct task_struct *task, int key)
++{
++    unsigned int hash = key % 1024;
++    struct kv_pair *pair;
++
++    hlist_for_each_entry(pair, &task->kv_store[hash], node) {
++        if (pair->key == key)
++            return pair;
++    }
++
++    return NULL;
++}
++
++/* Write a key-value pair */
++SYSCALL_DEFINE2(write_kv, int, key, int, value)
++{
++    unsigned int hash = key % 1024;
++    struct kv_pair *pair;
++    struct task_struct *task = get_kv_task();
++
++    spin_lock(&task->kv_locks[hash]);
++
++    pair = find_kv_pair(task, key);
++    if (pair) {
++        pair->value = value;
++    } else {
++        pair = kmalloc(sizeof(struct kv_pair), GFP_KERNEL);
++        if (!pair) {
++            spin_unlock(&task->kv_locks[hash]);
++            return -ENOMEM;
++        }
++        pair->key = key;
++        pair->value = value;
++        hlist_add_head(&pair->node, &task->kv_store[hash]);
++    }
++
++    spin_unlock(&task->kv_locks[hash]);
++    return sizeof(int);
++}
++
++/* Read a key-value pair */
++SYSCALL_DEFINE1(read_kv, int, key)
++{
++    unsigned int hash = key % 1024;
++    struct kv_pair *pair;
++    struct task_struct *task = get_kv_task();
++    int value;
++
++    spin_lock(&task->kv_locks[hash]);
++
++    pair = find_kv_pair(task, key);
++    if (pair) {
++        value = pair->value;
++        spin_unlock(&task->kv_locks[hash]);
++        return value;
++    }
++
++    spin_unlock(&task->kv_locks[hash]);
++    return -ENOENT; // Key not found
++}
+\ No newline at end of file
+diff --git a/kernel/sys_ni.c b/kernel/sys_ni.c
+index 860b2dcf3..0907a94ea 100644
+--- a/kernel/sys_ni.c
++++ b/kernel/sys_ni.c
+@@ -479,3 +479,6 @@ COND_SYSCALL(setuid16);
+ 
+ /* restartable sequence */
+ COND_SYSCALL(rseq);
++
++COND_SYSCALL(write_kv);
++COND_SYSCALL(read_kv);
+-- 
+2.43.0
+

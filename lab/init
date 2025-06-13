@@ -1,0 +1,25 @@
+#!/bin/busybox sh
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t tmpfs none /tmp
+mount -t devtmpfs none /dev
+# mount /dev/sda1 /mnt/efi
+echo "Hello Linux!"
+
+# insmod my_runtime_service.ko
+# echo 2 > /sys/firmware/efi/my_service/my_service
+# cat /sys/firmware/efi/my_service/my_service
+
+# test_persistent_ramfs.sh > out.log && cat out.log
+# test_persistent_ramfs.sh
+# test_mount_only.sh
+
+# socket_test
+# sysctl -w net.max_sockets_per_thread=50
+# cat /proc/sys/net/max_sockets_per_thread
+# socket_test
+
+sh
+# rmmod my_runtime_service
+echo "Goodbye!"
+poweroff -f

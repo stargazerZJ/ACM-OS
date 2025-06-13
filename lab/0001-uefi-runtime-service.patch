@@ -1,0 +1,279 @@
+diff --git a/arch/x86/mm/pat/set_memory.c b/arch/x86/mm/pat/set_memory.c
+index 1abd5438f..f9c4c09c3 100644
+--- a/arch/x86/mm/pat/set_memory.c
++++ b/arch/x86/mm/pat/set_memory.c
+@@ -1974,6 +1974,8 @@ int set_memory_nx(unsigned long addr, int numpages)
+ 
+ 	return change_page_attr_set(&addr, numpages, __pgprot(_PAGE_NX), 0);
+ }
++EXPORT_SYMBOL(set_memory_x);
++EXPORT_SYMBOL(set_memory_nx);
+ 
+ int set_memory_ro(unsigned long addr, int numpages)
+ {
+diff --git a/drivers/firmware/efi/Kconfig b/drivers/firmware/efi/Kconfig
+index 7aa4717cd..9b7c58f7c 100644
+--- a/drivers/firmware/efi/Kconfig
++++ b/drivers/firmware/efi/Kconfig
+@@ -309,6 +309,16 @@ config EFI_EMBEDDED_FIRMWARE
+ 	bool
+ 	select CRYPTO_LIB_SHA256
+ 
++config EFI_MY_RUNTIME_SERVICE
++	tristate "My UEFI Runtime Service Support"
++	depends on EFI && EFI_VARS
++	help
++	  This option enables support for a custom UEFI runtime service
++	  that can be accessed through sysfs. The service takes a 32-bit
++	  integer input and returns a 32-bit integer output.
++
++	  If you are unsure, say N.
++
+ endmenu
+ 
+ config UEFI_CPER
+diff --git a/drivers/firmware/efi/Makefile b/drivers/firmware/efi/Makefile
+index c02ff25dd..1ef984c51 100644
+--- a/drivers/firmware/efi/Makefile
++++ b/drivers/firmware/efi/Makefile
+@@ -32,6 +32,7 @@ obj-$(CONFIG_APPLE_PROPERTIES)		+= apple-properties.o
+ obj-$(CONFIG_EFI_RCI2_TABLE)		+= rci2-table.o
+ obj-$(CONFIG_EFI_EMBEDDED_FIRMWARE)	+= embedded-firmware.o
+ obj-$(CONFIG_LOAD_UEFI_KEYS)		+= mokvar-table.o
++obj-$(CONFIG_EFI_MY_RUNTIME_SERVICE) += my_runtime_service.o
+ 
+ fake_map-y				+= fake_mem.o
+ fake_map-$(CONFIG_X86)			+= x86_fake_mem.o
+diff --git a/drivers/firmware/efi/efi.c b/drivers/firmware/efi/efi.c
+index 860534bcf..cbd92f0a0 100644
+--- a/drivers/firmware/efi/efi.c
++++ b/drivers/firmware/efi/efi.c
+@@ -111,6 +111,7 @@ static int __init parse_efi_cmdline(char *str)
+ early_param("efi", parse_efi_cmdline);
+ 
+ struct kobject *efi_kobj;
++EXPORT_SYMBOL_GPL(efi_kobj);
+ 
+ /*
+  * Let's not leave out systab information that snuck into
+diff --git a/drivers/firmware/efi/my_runtime_service.c b/drivers/firmware/efi/my_runtime_service.c
+new file mode 100644
+index 000000000..e55253fca
+--- /dev/null
++++ b/drivers/firmware/efi/my_runtime_service.c
+@@ -0,0 +1,214 @@
++#include <asm/io.h>
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/efi.h>
++#include <linux/sysfs.h>
++#include <linux/device.h>
++#include <linux/efi.h>
++#include <linux/mm.h>
++#include <asm/set_memory.h>
++
++/* GUID for our custom UEFI runtime service */
++// 9f01e43e-b2a1-4774-9ea8-a51ffd6d30fc
++static efi_guid_t MY_RUNTIME_SERVICE_GUID = EFI_GUID(
++    0x9f01e43e, 0xb2a1, 0x4774,
++    0x9e, 0xa8, 0xa5, 0x1f, 0xfd, 0x6d, 0x30, 0xfc
++);
++
++/* Function pointer type for our runtime service */
++typedef u64 (*my_runtime_service_t)(u64 input);
++
++/* Pointer to the actual runtime service function */
++static my_runtime_service_t my_runtime_service;
++
++/* Store the mapped memory for cleanup */
++static void *mapped_memory;
++static int mapped_pages;
++
++/* Store last input/output for debugging */
++static u64 last_input;
++static u64 last_output;
++
++/* Find our runtime service in the UEFI system table */
++static int find_runtime_service(void)
++{
++    unsigned long size;
++    u64 phys_addr;
++    efi_status_t status;
++    void *virt_addr;
++    unsigned long addr_aligned;
++    unsigned long offset;
++    int pages;
++
++    /* First try to get the service through a UEFI variable */
++    size = sizeof(my_runtime_service);
++    status = efi.get_variable(L"MyRuntimeService", &MY_RUNTIME_SERVICE_GUID,
++                            NULL, &size, &phys_addr);
++    if (status == EFI_SUCCESS) {
++        /* Calculate page-aligned address and offset */
++        addr_aligned = (unsigned long)phys_addr & PAGE_MASK;
++        offset = (unsigned long)phys_addr & ~PAGE_MASK;
++        pages = 1; /* Assuming the function fits in one page */
++
++        /* Map the physical memory as executable */
++        virt_addr = ioremap(addr_aligned, pages * PAGE_SIZE);
++        if (!virt_addr) {
++            pr_err("Failed to map runtime service memory\n");
++            return -ENOMEM;
++        }
++
++        /* Set the memory as executable */
++        if (set_memory_x((unsigned long)virt_addr, pages)) {
++            pr_err("Failed to set memory as executable\n");
++            iounmap(virt_addr);
++            return -EINVAL;
++        }
++
++        my_runtime_service = (my_runtime_service_t)(virt_addr + offset);
++        pr_info("Runtime service physical address: 0x%llx, virtual address: %px\n",
++                phys_addr, my_runtime_service);
++
++        /* Store the mapped memory for cleanup */
++        mapped_memory = virt_addr;
++        mapped_pages = pages;
++        return 0;
++    }
++
++    /* If that fails, we could try other methods to locate the service */
++    /* For now, we'll just return an error */
++    return -ENODEV;
++}
++
++/* sysfs show function */
++static ssize_t my_service_show(struct kobject *kobj,
++                              struct kobj_attribute *attr, char *buf)
++{
++    return sprintf(buf, "Last call: input=%llu, output=%llu\n",
++                  last_input, last_output);
++}
++
++/* sysfs store function */
++static ssize_t my_service_store(struct kobject *kobj,
++                               struct kobj_attribute *attr,
++                               const char *buf, size_t count)
++{
++    u64 input;
++    u64 output;
++    efi_status_t status;
++    int ret;
++
++    if (!efi_enabled(EFI_RUNTIME_SERVICES))
++        return -ENODEV;
++
++    if (!my_runtime_service)
++        return -ENODEV;
++
++    ret = kstrtou64(buf, 0, &input);
++    if (ret < 0)
++        return ret;
++
++    /* Call the UEFI runtime service */
++    output = my_runtime_service(input);
++    if (status != EFI_SUCCESS)
++        return -EINVAL;
++
++    last_input = input;
++    last_output = output;
++
++    return count;
++}
++
++static struct kobj_attribute my_service_attribute =
++    __ATTR(my_service, 0644, my_service_show, my_service_store);
++
++static struct attribute *attrs[] = {
++    &my_service_attribute.attr,
++    NULL,
++};
++
++static struct attribute_group attr_group = {
++    .attrs = attrs,
++};
++
++static struct kobject *my_service_kobj;
++
++/* Function to print memory bytes */
++static void print_memory(void *addr, size_t len) {
++    unsigned char *p = addr;
++    size_t i;
++
++    pr_info("Function at %px, first %zu bytes:", addr, len);
++
++    for (i = 0; i < len; i++) {
++        if (i % 8 == 0)
++            pr_cont("\n%04zx: ", i);
++        pr_cont("%02x ", p[i]);
++    }
++    pr_cont("\n");
++}
++
++static int __init my_runtime_service_init(void)
++{
++    int ret;
++
++    if (!efi_enabled(EFI_RUNTIME_SERVICES))
++        return -ENODEV;
++
++    /* Create sysfs entry under /sys/firmware/efi */
++    my_service_kobj = kobject_create_and_add("my_service", efi_kobj);
++    if (!my_service_kobj)
++        return -ENOMEM;
++
++    ret = sysfs_create_group(my_service_kobj, &attr_group);
++    if (ret) {
++        kobject_put(my_service_kobj);
++        return ret;
++    }
++
++    /* Find our runtime service */
++    ret = find_runtime_service();
++    if (ret) {
++        pr_warn("Failed to find UEFI runtime service\n");
++        /* We'll continue anyway, but the service won't be available */
++    } else {
++        u64 input = 42; /* Example input */
++        u64 output = 1;
++        pr_info("Found UEFI runtime service at %px\n", my_runtime_service);
++
++        /* Print the first bytes of the function */
++        print_memory((void*)my_runtime_service, 32);
++
++        /* Try to call the service */
++        output = my_runtime_service(input);
++        pr_info("Runtime service call succeeded: output=%lld\n", output);
++        last_input = input;
++        last_output = output;
++    }
++
++    pr_info("My UEFI runtime service module initialized\n");
++    return 0;
++}
++
++static void __exit my_runtime_service_exit(void)
++{
++    if (my_service_kobj) {
++        sysfs_remove_group(my_service_kobj, &attr_group);
++        kobject_put(my_service_kobj);
++    }
++
++    /* Clean up mapped memory */
++    if (mapped_memory) {
++        set_memory_nx((unsigned long)mapped_memory, mapped_pages);
++        iounmap(mapped_memory);
++    }
++
++    pr_info("My UEFI runtime service module unloaded\n");
++}
++
++module_init(my_runtime_service_init);
++module_exit(my_runtime_service_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Your Name");
++MODULE_DESCRIPTION("UEFI Runtime Service Exposure Module");
+\ No newline at end of file

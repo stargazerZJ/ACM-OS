@@ -1,0 +1,230 @@
+diff --git a/fs/proc/base.c b/fs/proc/base.c
+index 93f7e3d97..f804be07e 100644
+--- a/fs/proc/base.c
++++ b/fs/proc/base.c
+@@ -2654,7 +2654,7 @@ static struct dentry *proc_pident_instantiate(struct dentry *dentry,
+ 	return d_splice_alias(inode, dentry);
+ }
+ 
+-static struct dentry *proc_pident_lookup(struct inode *dir, 
++static struct dentry *proc_pident_lookup(struct inode *dir,
+ 					 struct dentry *dentry,
+ 					 const struct pid_entry *p,
+ 					 const struct pid_entry *end)
+@@ -2867,7 +2867,7 @@ static const struct pid_entry attr_dir_stuff[] = {
+ 
+ static int proc_attr_dir_readdir(struct file *file, struct dir_context *ctx)
+ {
+-	return proc_pident_readdir(file, ctx, 
++	return proc_pident_readdir(file, ctx,
+ 				   attr_dir_stuff, ARRAY_SIZE(attr_dir_stuff));
+ }
+ 
+@@ -3907,3 +3907,25 @@ void __init set_proc_pid_nlink(void)
+ 	nlink_tid = pid_entry_nlink(tid_base_stuff, ARRAY_SIZE(tid_base_stuff));
+ 	nlink_tgid = pid_entry_nlink(tgid_base_stuff, ARRAY_SIZE(tgid_base_stuff));
+ }
++
++static ssize_t proc_socket_count_read(struct file *file, char __user *buf,
++                                    size_t count, loff_t *ppos)
++{
++    struct task_struct *task = get_proc_task(file_inode(file));
++    char buffer[32];
++    int len;
++
++    if (!task)
++        return -ESRCH;
++
++    len = snprintf(buffer, sizeof(buffer), "%d\n",
++                   atomic_read(&task->socket_count));
++    put_task_struct(task);
++
++    return simple_read_from_buffer(buf, count, ppos, buffer, len);
++}
++
++static const struct proc_ops proc_socket_count_ops = {
++    .proc_read = proc_socket_count_read,
++    .proc_lseek = generic_file_llseek,
++};
+\ No newline at end of file
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index e02dc270f..881b8934b 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1500,6 +1500,8 @@ struct task_struct {
+ 	struct callback_head		l1d_flush_kill;
+ #endif
+ 
++	atomic_t socket_count;          /* Number of open sockets for this thread */
++
+ 	/*
+ 	 * New fields for task_struct should be added above here, so that
+ 	 * they are included in the randomized portion of task_struct.
+diff --git a/include/linux/socket.h b/include/linux/socket.h
+index 17311ad9f..ff55ee19d 100644
+--- a/include/linux/socket.h
++++ b/include/linux/socket.h
+@@ -453,4 +453,5 @@ extern int __sys_socketpair(int family, int type, int protocol,
+ 			    int __user *usockvec);
+ extern int __sys_shutdown_sock(struct socket *sock, int how);
+ extern int __sys_shutdown(int fd, int how);
++extern int sysctl_max_sockets_per_thread;
+ #endif /* _LINUX_SOCKET_H */
+diff --git a/kernel/fork.c b/kernel/fork.c
+index d587c85f3..012a6cc41 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -2475,6 +2475,9 @@ static __latent_entropy struct task_struct *copy_process(
+ 
+ 	copy_oom_score_adj(clone_flags, p);
+ 
++	// Initialize socket counter
++    atomic_set(&p->socket_count, 0);
++
+ 	return p;
+ 
+ bad_fork_cancel_cgroup:
+diff --git a/kernel/sysctl.c b/kernel/sysctl.c
+index 35d034219..cef16cb83 100644
+--- a/kernel/sysctl.c
++++ b/kernel/sysctl.c
+@@ -492,12 +492,12 @@ static int __do_proc_dointvec(void *tbl_data, struct ctl_table *table,
+ 	int *i, vleft, first = 1, err = 0;
+ 	size_t left;
+ 	char *p;
+-	
++
+ 	if (!tbl_data || !table->maxlen || !*lenp || (*ppos && !write)) {
+ 		*lenp = 0;
+ 		return 0;
+ 	}
+-	
++
+ 	i = (int *) tbl_data;
+ 	vleft = table->maxlen / sizeof(*i);
+ 	left = *lenp;
+@@ -729,7 +729,7 @@ int proc_dobool(struct ctl_table *table, int write, void *buffer,
+  * @ppos: file position
+  *
+  * Reads/writes up to table->maxlen/sizeof(unsigned int) integer
+- * values from/to the user buffer, treated as an ASCII string. 
++ * values from/to the user buffer, treated as an ASCII string.
+  *
+  * Returns 0 on success.
+  */
+@@ -1249,7 +1249,7 @@ static int do_proc_dointvec_ms_jiffies_conv(bool *negp, unsigned long *lvalp,
+  * @ppos: file position
+  *
+  * Reads/writes up to table->maxlen/sizeof(unsigned int) integer
+- * values from/to the user buffer, treated as an ASCII string. 
++ * values from/to the user buffer, treated as an ASCII string.
+  * The values read are assumed to be in seconds, and are converted into
+  * jiffies.
+  *
+@@ -1271,8 +1271,8 @@ int proc_dointvec_jiffies(struct ctl_table *table, int write,
+  * @ppos: pointer to the file position
+  *
+  * Reads/writes up to table->maxlen/sizeof(unsigned int) integer
+- * values from/to the user buffer, treated as an ASCII string. 
+- * The values read are assumed to be in 1/USER_HZ seconds, and 
++ * values from/to the user buffer, treated as an ASCII string.
++ * The values read are assumed to be in 1/USER_HZ seconds, and
+  * are converted into jiffies.
+  *
+  * Returns 0 on success.
+@@ -2448,6 +2448,50 @@ int __init sysctl_init_bases(void)
+ 
+ 	return 0;
+ }
++
++int sysctl_max_sockets_per_thread = 100;
++
++static struct ctl_table socket_limit_table[] = {
++    {
++        .procname   = "max_sockets_per_thread",
++        .data       = &sysctl_max_sockets_per_thread,
++        .maxlen     = sizeof(int),
++        .mode       = 0644,
++        .proc_handler = proc_dointvec_minmax,
++        .extra1     = SYSCTL_ZERO,
++        .extra2     = SYSCTL_INT_MAX,
++    },
++    { }
++};
++
++static struct ctl_table socket_limit_root_table[] = {
++    {
++        .procname   = "net",
++        .mode       = 0555,
++        .child      = socket_limit_table,
++    },
++    { }
++};
++
++static struct ctl_table_header *socket_limit_sysctl_header;
++
++static int __init socket_limit_sysctl_init(void)
++{
++    socket_limit_sysctl_header = register_sysctl_table(socket_limit_root_table);
++    if (!socket_limit_sysctl_header)
++        return -ENOMEM;
++    return 0;
++}
++
++static void __exit socket_limit_sysctl_exit(void)
++{
++    if (socket_limit_sysctl_header)
++        unregister_sysctl_table(socket_limit_sysctl_header);
++}
++
++subsys_initcall(socket_limit_sysctl_init);
++
++
+ #endif /* CONFIG_SYSCTL */
+ /*
+  * No sense putting this after each symbol definition, twice,
+diff --git a/net/socket.c b/net/socket.c
+index 34102aa4a..a67176547 100644
+--- a/net/socket.c
++++ b/net/socket.c
+@@ -655,6 +655,12 @@ static void __sock_release(struct socket *sock, struct inode *inode)
+ 		module_put(owner);
+ 	}
+ 
++    // Decrement counter when socket is released
++    // Note: This assumes socket is being released by the creating thread
++    if (sock->file) {
++        atomic_dec(&current->socket_count);
++    }
++
+ 	if (sock->wq.fasync_list)
+ 		pr_err("%s: fasync list not empty!\n", __func__);
+ 
+@@ -1456,6 +1462,15 @@ int __sock_create(struct net *net, int family, int type, int protocol,
+ 	if (type < 0 || type >= SOCK_MAX)
+ 		return -EINVAL;
+ 
++	// Check per-thread socket limit for non-kernel sockets
++    if (!kern) {
++        int current_count = atomic_read(&current->socket_count);
++        if (current_count >= sysctl_max_sockets_per_thread) {
++			net_warn_ratelimited("socket: per thread limit reached\n");
++            return -EMFILE;
++        }
++    }
++
+ 	/* Compatibility.
+ 
+ 	   This uglymoron is moved from INET layer to here to avoid
+@@ -1516,6 +1531,11 @@ int __sock_create(struct net *net, int family, int type, int protocol,
+ 	if (err < 0)
+ 		goto out_module_put;
+ 
++    // Increment counter on successful creation (non-kernel sockets only)
++    if (!kern) {
++        atomic_inc(&current->socket_count);
++    }
++
+ 	/*
+ 	 * Now to bump the refcnt of the [loadable] module that owns this
+ 	 * socket at sock_release time we decrement its refcnt.
