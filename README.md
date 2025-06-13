@@ -17,7 +17,7 @@ Implementations for the following labs, mostly available as patches in the `/lab
 
 ### Lab 1.1: Acpi Viewer
 
-Difficulty: 🟢🟢🟢⚪⚪
+Difficulty: 🟡🟡🟡⚪⚪
 
 A UEFI application that displays ACPI tables.
 
@@ -25,7 +25,7 @@ A UEFI application that displays ACPI tables.
 
 ### Lab 1.2: Acpi Hacker
 
-Difficulty: 🟢🟢🟢⚪⚪
+Difficulty: 🟡🟡🟡⚪⚪
 
 A UEFI application that modifies ACPI tables.
 
@@ -33,7 +33,7 @@ A UEFI application that modifies ACPI tables.
 
 ### Lab 1.3: UEFI Runtime Driver
 
-Difficulty: 🟢🟢🟢🟢🟢
+Difficulty: 🔴🔴🔴🔴🔴
 
 A UEFI runtime driver that provides a function for user space applications to execute.
 
@@ -43,7 +43,7 @@ Kernel side integration: [0001-uefi-runtime-service.patch](lab/0001-uefi-runtime
 
 ### Lab 2.1: Key-Value Store Syscalls
 
-Difficulty: 🟢🟢🟢⚪⚪
+Difficulty: 🟡🟡🟡⚪⚪
 
 A simple in-kernel key-value store implemented using system calls.
 
@@ -51,7 +51,7 @@ A simple in-kernel key-value store implemented using system calls.
 
 ### Lab 2.2: vDSO
 
-Difficulty: 🟢🟢🟢🟢🟢
+Difficulty: 🔴🔴🔴🔴🔴
 
 A Virtual Dynamic Shared Object version of the `getpid` system call.
 
@@ -59,7 +59,7 @@ A Virtual Dynamic Shared Object version of the `getpid` system call.
 
 ### Lab 3.1: Using mmap
 
-Difficulty: 🟢⚪⚪⚪⚪
+Difficulty: 🔵⚪⚪⚪⚪
 
 An exercise to use `mmap` and related system calls.
 
@@ -67,7 +67,7 @@ An exercise to use `mmap` and related system calls.
 
 ### Lab 3.2: Persistent Ramfs
 
-Difficulty: 🟢🟢🟢🟢⚪
+Difficulty: 🟠🟠🟠🟠⚪
 
 Modification of the existing RAM filesystem to support persistence.
 
@@ -75,7 +75,7 @@ Modification of the existing RAM filesystem to support persistence.
 
 ### Lab 4.1: Inode and Xattr
 
-Difficulty: 🟢⚪⚪⚪⚪
+Difficulty: 🔵⚪⚪⚪⚪
 
 An exercise to modify extended attributes (xattr) in the inode structure.
 
@@ -91,7 +91,7 @@ An interface of Large Language Model (LLM) to the filesystem, based on FUSE.
 
 ### Lab 5.1.1: Customize `tcpdump`
 
-Difficulty: 🟢⚪⚪⚪⚪
+Difficulty: 🔵⚪⚪⚪⚪
 
 Add a custom filter to `tcpdump` to skip the first `n` packets. Based on `tcpdump` version 4.99.5.
 
@@ -109,7 +109,7 @@ Implement a limit on the number of sockets that can be opened by a single thread
 
 ### Lab 5.2: NCCL
 
-Difficulty: 🟢🟢🟢⚪⚪
+Difficulty: 🟡🟡🟡⚪⚪
 
 An exercise to use the NVIDIA Collective Communications Library (NCCL) for multi-GPU communication.
 
