@@ -97,7 +97,7 @@ Add a custom filter to `tcpdump` to skip the first `n` packets. Based on `tcpdum
 
 [0001-tcpdump-skip-n.patch](lab/0001-tcpdump-skip-n.patch)
 
-Side note: I later found that the exact same functionality would be added to `tcpdump` in version 5.0.0, which was released as of the time of writing.
+Side note: I later found that the exact same functionality would be added to `tcpdump` in version 5.0.0, which was not released as of the time of writing.
 
 ### Lab 5.1.2: Thread Socket Limit
 
